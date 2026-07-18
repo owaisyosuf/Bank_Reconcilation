@@ -39,6 +39,25 @@ class ScannedPdfError(Exception):
         )
 
 
+class PasswordProtectedPdfError(Exception):
+    """Raised when a PDF is encrypted and no (or the wrong) password was
+    supplied to `BaseParser.parse(..., password=...)`.
+
+    Callers should show this message and prompt the user for the statement's
+    PDF password (Pakistani banks commonly encrypt e-statements with a
+    customer-specific password, e.g. CNIC digits).
+    """
+
+    def __init__(self, message: str | None = None):
+        super().__init__(
+            message
+            or (
+                "This PDF is password-protected. Please supply the correct "
+                "password for this statement and try again."
+            )
+        )
+
+
 @dataclass
 class StandardTransaction:
     """The internal schema every parser normalizes into.
@@ -66,8 +85,20 @@ class BaseParser(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def parse(self, file_bytes: bytes, filename: str) -> list["StandardTransaction"]:
-        """Parse the file into a list of StandardTransaction."""
+    def parse(
+        self,
+        file_bytes: bytes,
+        filename: str,
+        password: str | None = None,
+    ) -> list["StandardTransaction"]:
+        """Parse the file into a list of StandardTransaction.
+
+        `password` is only meaningful for adapters that may encounter
+        encrypted PDFs (e.g. bank_alfalah.py); adapters that don't need it
+        can simply ignore the parameter. Defaults to None so this is
+        backward compatible with existing adapters (Python ABCs don't
+        enforce exact signature matching, only method presence).
+        """
         raise NotImplementedError
 
 

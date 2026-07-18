@@ -7,11 +7,18 @@ as their own `bank_<name>.py` files — never by editing existing adapters.
 
 from __future__ import annotations
 
-from app.parsers.base import BaseParser, ScannedPdfError, StandardTransaction
+from app.parsers.base import (
+    BaseParser,
+    PasswordProtectedPdfError,
+    ScannedPdfError,
+    StandardTransaction,
+)
+from app.parsers.bank_alfalah import BankAlfalahParser
 from app.parsers.bank_generic import GenericParser
 
 BANK_ADAPTERS: dict[str, type[BaseParser]] = {
     "Other/Auto-detect": GenericParser,
+    "Bank Alfalah": BankAlfalahParser,
 }
 
 
@@ -31,7 +38,9 @@ __all__ = [
     "BaseParser",
     "StandardTransaction",
     "ScannedPdfError",
+    "PasswordProtectedPdfError",
     "BANK_ADAPTERS",
     "get_parser",
     "GenericParser",
+    "BankAlfalahParser",
 ]

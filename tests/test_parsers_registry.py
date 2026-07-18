@@ -2,7 +2,7 @@
 
 import pytest
 
-from app.parsers import BANK_ADAPTERS, GenericParser, get_parser
+from app.parsers import BANK_ADAPTERS, BankAlfalahParser, GenericParser, get_parser
 
 
 def test_other_auto_detect_registered():
@@ -10,9 +10,19 @@ def test_other_auto_detect_registered():
     assert BANK_ADAPTERS["Other/Auto-detect"] is GenericParser
 
 
+def test_bank_alfalah_registered():
+    assert "Bank Alfalah" in BANK_ADAPTERS
+    assert BANK_ADAPTERS["Bank Alfalah"] is BankAlfalahParser
+
+
 def test_get_parser_returns_instance():
     parser = get_parser("Other/Auto-detect")
     assert isinstance(parser, GenericParser)
+
+
+def test_get_parser_returns_alfalah_instance():
+    parser = get_parser("Bank Alfalah")
+    assert isinstance(parser, BankAlfalahParser)
 
 
 def test_get_parser_unknown_bank_raises():
