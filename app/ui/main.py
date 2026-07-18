@@ -26,6 +26,11 @@ except ImportError:  # pragma: no cover - openpyxl is a hard dependency
     openpyxl = None
 
 from app.export.excel_report import build_excel_report
+from app.llm.description_matcher import (
+    LlmUnavailableError,
+    get_llm_description_scores,
+    is_llm_configured,
+)
 from app.matching.engine import ReconciliationResult, reconcile
 from app.matching.scoring import MatchConfig, MatchRecord
 from app.parsers import BANK_ADAPTERS, get_parser
@@ -471,9 +476,16 @@ def _sidebar() -> tuple:
     ai_enabled = st.sidebar.toggle(
         "Enable AI description matching",
         value=False,
-        help="Off by default. Only refines already-shortlisted candidates; "
-        "wired up in a later milestone.",
+        help="Off by default. Uses Google Gemini to re-score description "
+        "similarity for candidates already shortlisted by amount+date — "
+        "never used to decide amounts or dates. Requires GOOGLE_API_KEY "
+        "in the environment.",
     )
+    if ai_enabled and not is_llm_configured():
+        st.sidebar.warning(
+            "GOOGLE_API_KEY is not set in the environment — AI matching will "
+            "be skipped and plain description matching will be used instead."
+        )
     st.session_state["ai_description_matching_enabled"] = ai_enabled
 
     try:
@@ -488,7 +500,7 @@ def _sidebar() -> tuple:
         st.sidebar.error("Invalid tolerance value; using defaults.")
         config = MatchConfig()
 
-    return bank_name, bank_file, ledger_file, config
+    return bank_name, bank_file, ledger_file, config, ai_enabled
 
 
 # ---------------------------------------------------------------------------
@@ -501,7 +513,7 @@ def main() -> None:
     st.title("Bank Reconciliation")
     st.caption("Upload a bank statement and your ledger to generate a reconciliation report.")
 
-    bank_name, bank_file, ledger_file, config = _sidebar()
+    bank_name, bank_file, ledger_file, config, ai_enabled = _sidebar()
 
     bank_txns: list[StandardTransaction] | None = None
     if bank_file is not None:
@@ -523,7 +535,20 @@ def main() -> None:
         ledger_txns = _handle_ledger_upload(ledger_file)
 
     if bank_txns and ledger_txns:
-        result = reconcile(bank_txns, ledger_txns, config)
+        llm_scores = None
+        if ai_enabled and is_llm_configured():
+            try:
+                with st.spinner("Asking Gemini to compare shortlisted descriptions..."):
+                    llm_scores = get_llm_description_scores(bank_txns, ledger_txns, config)
+            except LlmUnavailableError as exc:
+                st.warning(f"AI description matching skipped: {exc}")
+            except Exception as exc:
+                st.warning(
+                    f"AI description matching failed ({exc}); falling back to "
+                    "plain description matching."
+                )
+
+        result = reconcile(bank_txns, ledger_txns, config, llm_scores=llm_scores)
         _render_summary(result, bank_txns)
         _render_tabs(result)
         _render_export_section(result)
