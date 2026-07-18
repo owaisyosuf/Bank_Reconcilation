@@ -1,0 +1,4 @@
+Txn Date,Voucher No,Narration,Withdrawal,Deposit
+01/03/2026,V-001,Opening balance c/f,,
+02/03/2026,V-002,Payment to Supplier ABC,"10,000.00",
+03/03/2026,V-003,Received from Customer XYZ,,"22,500.75"

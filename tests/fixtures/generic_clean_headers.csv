@@ -1,0 +1,5 @@
+Date,Description,Debit,Credit,Balance
+01/01/2026,Opening Balance,,,"100,000.00"
+02/01/2026,Cash Deposit,,"50,000.00","150,000.00"
+03/01/2026,Cheque Withdrawal,"25,000.00",,"125,000.00"
+04/01/2026,ATM Withdrawal,"1,234.56",,"123,765.44"
