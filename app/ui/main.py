@@ -539,14 +539,24 @@ def _sidebar() -> tuple:
         value=False,
         help="Off by default. Uses Google Gemini to re-score description "
         "similarity for candidates already shortlisted by amount+date — "
-        "never used to decide amounts or dates. Requires GOOGLE_API_KEY "
-        "in the environment.",
+        "never used to decide amounts or dates.",
     )
-    if ai_enabled and not is_llm_configured():
-        st.sidebar.warning(
-            "GOOGLE_API_KEY is not set in the environment — AI matching will "
-            "be skipped and plain description matching will be used instead."
+    gemini_api_key = ""
+    if ai_enabled:
+        gemini_api_key = st.sidebar.text_input(
+            "Google Gemini API key",
+            type="password",
+            key="gemini_api_key",
+            help="Get a free key at https://aistudio.google.com/apikey. "
+            "Used only for this session's requests directly to Google's "
+            "API — never stored or sent anywhere else.",
         )
+        if not gemini_api_key and not is_llm_configured():
+            st.sidebar.warning(
+                "Enter a Gemini API key above to use AI description matching — "
+                "otherwise it will be skipped and plain description matching "
+                "will be used instead."
+            )
     st.session_state["ai_description_matching_enabled"] = ai_enabled
 
     try:
@@ -561,7 +571,7 @@ def _sidebar() -> tuple:
         st.sidebar.error("Invalid tolerance value; using defaults.")
         config = MatchConfig()
 
-    return bank_name, bank_file, bank_password, ledger_file, config, ai_enabled
+    return bank_name, bank_file, bank_password, ledger_file, config, ai_enabled, gemini_api_key
 
 
 # ---------------------------------------------------------------------------
@@ -574,7 +584,7 @@ def main() -> None:
     st.title("Bank Reconciliation")
     st.caption("Upload a bank statement and your ledger to generate a reconciliation report.")
 
-    bank_name, bank_file, bank_password, ledger_file, config, ai_enabled = _sidebar()
+    bank_name, bank_file, bank_password, ledger_file, config, ai_enabled, gemini_api_key = _sidebar()
 
     bank_txns: list[StandardTransaction] | None = None
     if bank_file is not None:
@@ -601,10 +611,12 @@ def main() -> None:
 
     if bank_txns and ledger_txns:
         llm_scores = None
-        if ai_enabled and is_llm_configured():
+        if ai_enabled and (gemini_api_key or is_llm_configured()):
             try:
                 with st.spinner("Asking Gemini to compare shortlisted descriptions..."):
-                    llm_scores = get_llm_description_scores(bank_txns, ledger_txns, config)
+                    llm_scores = get_llm_description_scores(
+                        bank_txns, ledger_txns, config, api_key=gemini_api_key or None
+                    )
             except LlmUnavailableError as exc:
                 st.warning(f"AI description matching skipped: {exc}")
             except Exception as exc:
