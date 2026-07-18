@@ -16,7 +16,17 @@ import datetime
 import hashlib
 import inspect
 import io
+import sys
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
+
+# `streamlit run` only puts this file's own directory (app/ui/) on sys.path,
+# not the project root — so the `app.*` imports below only resolve if the
+# process happened to be launched from the repo root already. Make this
+# independent of the launch directory by adding the repo root explicitly.
+_REPO_ROOT = str(Path(__file__).resolve().parents[2])
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 import pandas as pd
 import streamlit as st
