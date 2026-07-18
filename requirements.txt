@@ -1,0 +1,6 @@
+streamlit==1.59.2
+pandas==3.0.3
+pdfplumber==0.11.10
+rapidfuzz==3.14.5
+openpyxl==3.1.5
+google-genai==2.12.1
