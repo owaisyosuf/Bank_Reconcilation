@@ -548,8 +548,9 @@ def _sidebar() -> tuple:
             type="password",
             key="gemini_api_key",
             help="Get a free key at https://aistudio.google.com/apikey. "
-            "Used only for this session's requests directly to Google's "
-            "API — never stored or sent anywhere else.",
+            "Press Enter after pasting to apply it — otherwise it won't be "
+            "saved. Used only for this session's requests directly to "
+            "Google's API — never stored or sent anywhere else.",
         )
         if not gemini_api_key and not is_llm_configured():
             st.sidebar.warning(
