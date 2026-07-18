@@ -130,6 +130,7 @@ def _build_exact_candidates(
     config: MatchConfig,
     free_bank: set[int],
     free_ledger: set[int],
+    llm_scores: dict[tuple[int, int], int] | None = None,
 ) -> list[tuple[int, int, PairScore]]:
     candidates = []
     for bi in free_bank:
@@ -143,7 +144,7 @@ def _build_exact_candidates(
             date_diff = (b.date - l.date).days
             if abs(date_diff) > config.date_window_days:
                 continue
-            ps = score_pair(b, l, config, config.date_window_days)
+            ps = score_pair(b, l, config, config.date_window_days, llm_scores)
             candidates.append((bi, li, ps))
     return candidates
 
@@ -209,8 +210,11 @@ def _run_pass1_exact(
     config: MatchConfig,
     free_bank: set[int],
     free_ledger: set[int],
+    llm_scores: dict[tuple[int, int], int] | None = None,
 ) -> tuple[list[MatchRecord], list[MatchRecord]]:
-    candidates = _build_exact_candidates(bank_txns, ledger_txns, config, free_bank, free_ledger)
+    candidates = _build_exact_candidates(
+        bank_txns, ledger_txns, config, free_bank, free_ledger, llm_scores
+    )
     ambiguous_pairs = _detect_ambiguous_duplicate_pairs(candidates, bank_txns)
 
     normal = [(bi, li, ps, "exact") for bi, li, ps in candidates if (bi, li) not in ambiguous_pairs]
@@ -238,6 +242,7 @@ def _run_pass2_tolerance(
     config: MatchConfig,
     free_bank: set[int],
     free_ledger: set[int],
+    llm_scores: dict[tuple[int, int], int] | None = None,
 ) -> list[MatchRecord]:
     candidates: list[_Candidate] = []
     for bi in free_bank:
@@ -255,7 +260,7 @@ def _run_pass2_tolerance(
             date_diff = (b.date - l.date).days
             if abs(date_diff) > config.date_window_days:
                 continue
-            ps = score_pair(b, l, config, config.date_window_days)
+            ps = score_pair(b, l, config, config.date_window_days, llm_scores)
             candidates.append((bi, li, ps, "within_tolerance"))
 
     assigned = _greedy_assign(candidates, bank_txns, ledger_txns, free_bank, free_ledger)
@@ -273,6 +278,7 @@ def _run_pass3_review(
     config: MatchConfig,
     free_bank: set[int],
     free_ledger: set[int],
+    llm_scores: dict[tuple[int, int], int] | None = None,
 ) -> list[MatchRecord]:
     candidates: list[_Candidate] = []
     for bi in free_bank:
@@ -290,7 +296,7 @@ def _run_pass3_review(
                 # within the wider review window.
                 if not (config.date_window_days < abs(date_diff) <= config.review_date_window_days):
                     continue
-                ps = score_pair(b, l, config, config.review_date_window_days)
+                ps = score_pair(b, l, config, config.review_date_window_days, llm_scores)
                 reason = f"date_offset_{abs(date_diff)}d"
                 candidates.append((bi, li, ps, reason))
             else:
@@ -300,7 +306,7 @@ def _run_pass3_review(
                     continue
                 if abs(date_diff) > config.date_window_days:
                     continue
-                ps = score_pair(b, l, config, config.date_window_days)
+                ps = score_pair(b, l, config, config.date_window_days, llm_scores)
                 if ps.desc_score < config.description_review_threshold:
                     continue
                 candidates.append((bi, li, ps, "tolerance_strong_desc"))
@@ -318,10 +324,23 @@ def reconcile(
     bank_txns: list[StandardTransaction],
     ledger_txns: list[StandardTransaction],
     config: MatchConfig | None = None,
+    llm_scores: dict[tuple[int, int], int] | None = None,
 ) -> ReconciliationResult:
     """Run the full 3-pass reconciliation pipeline and return the result.
 
-    Pure function: no I/O, no side effects beyond the returned result.
+    `llm_scores`, if given, is an optional pre-computed dict of LLM
+    description-similarity overrides keyed by
+    `(bank_txn.source_row, ledger_txn.source_row)`. It is threaded down into
+    every `score_pair` call in every pass (this is deliberately per-pair, not
+    per-bank-transaction, so it can correctly disambiguate duplicate-amount
+    scenarios where one bank txn is scored against several ledger
+    candidates -- see `skills/reconciliation-matcher/SKILL.md`'s LLM Hook
+    section). Passing `None` (the default) reproduces the exact behavior of
+    the pipeline before this parameter existed.
+
+    Pure function: no I/O, no side effects beyond the returned result. This
+    layer never computes `llm_scores` itself -- it only consumes a dict
+    already prepared by the orchestrator.
     """
     config = config or MatchConfig()
     result = ReconciliationResult()
@@ -330,14 +349,18 @@ def reconcile(
     free_ledger: set[int] = set(range(len(ledger_txns)))
 
     exact_records, ambiguous_review_records = _run_pass1_exact(
-        bank_txns, ledger_txns, config, free_bank, free_ledger
+        bank_txns, ledger_txns, config, free_bank, free_ledger, llm_scores
     )
     result.exact.extend(exact_records)
 
-    tolerance_records = _run_pass2_tolerance(bank_txns, ledger_txns, config, free_bank, free_ledger)
+    tolerance_records = _run_pass2_tolerance(
+        bank_txns, ledger_txns, config, free_bank, free_ledger, llm_scores
+    )
     result.tolerance.extend(tolerance_records)
 
-    review_records = _run_pass3_review(bank_txns, ledger_txns, config, free_bank, free_ledger)
+    review_records = _run_pass3_review(
+        bank_txns, ledger_txns, config, free_bank, free_ledger, llm_scores
+    )
     # Ambiguous-duplicate REVIEW records from pass 1 are reported alongside
     # pass-3 REVIEW records (same tier, different reason).
     result.review.extend(ambiguous_review_records)

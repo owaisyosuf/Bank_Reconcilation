@@ -10,9 +10,13 @@ Implements exactly what's specified in
 
 Pure and deterministic: no I/O, no Streamlit, no network calls. The optional
 LLM description re-ranker is a pre-processing hook that lives OUTSIDE this
-layer — if an orchestrator has already stashed a score in
-`StandardTransaction.raw["llm_desc_score"]`, this module will consider it,
-but it never computes or fetches that value itself.
+layer. An orchestrator may pass a per-pair `llm_scores` dict (keyed by
+`(bank_source_row, ledger_source_row)`) into `score_pair`/`description_score`;
+this module will take `max(fuzzy_score, llm_score)` for pairs present in
+that dict. For backward compatibility it also still honors a flat
+`StandardTransaction.raw["llm_desc_score"]` fallback when no per-pair entry
+is found. Either way, this module never computes or fetches that value
+itself.
 """
 
 from __future__ import annotations
@@ -91,14 +95,37 @@ def _clamp01(value: Decimal) -> Decimal:
     return value
 
 
-def description_score(bank_txn: StandardTransaction, ledger_txn: StandardTransaction) -> int:
+def description_score(
+    bank_txn: StandardTransaction,
+    ledger_txn: StandardTransaction,
+    llm_scores: dict[tuple[int, int], int] | None = None,
+) -> int:
     """rapidfuzz token_sort_ratio (0-100 int), taking the max with an
-    optional pre-computed LLM score stashed in `bank_txn.raw['llm_desc_score']`
-    by an orchestrator outside this layer. Never makes network calls.
+    optional pre-computed LLM score for this specific (bank, ledger) pair.
+
+    Per-pair override (preferred): `llm_scores` is a dict keyed by
+    `(bank_txn.source_row, ledger_txn.source_row)`, pre-computed by an
+    orchestrator outside this layer (e.g. for shortlisted candidates in a
+    duplicate-amounts scenario, where a single bank txn is scored against
+    several ledger txns and a flat per-bank-txn override would defeat the
+    purpose of using descriptions to disambiguate). If present for this
+    exact pair, use `max(fuzzy_score, llm_score)`.
+
+    Flat fallback (backward compatible with M2): if no per-pair entry is
+    found, fall back to `bank_txn.raw['llm_desc_score']` if present -- a
+    single score applied to any pair involving that bank transaction.
+
+    Never makes network calls; only ever consumes pre-computed scores.
     """
     fuzzy = fuzz.token_sort_ratio(bank_txn.description or "", ledger_txn.description or "")
-    raw = bank_txn.raw or {}
-    llm_score = raw.get("llm_desc_score")
+
+    llm_score = None
+    if llm_scores is not None:
+        llm_score = llm_scores.get((bank_txn.source_row, ledger_txn.source_row))
+    if llm_score is None:
+        raw = bank_txn.raw or {}
+        llm_score = raw.get("llm_desc_score")
+
     if llm_score is not None:
         return int(round(max(fuzzy, float(llm_score))))
     return int(round(fuzzy))
@@ -109,6 +136,7 @@ def score_pair(
     ledger_txn: StandardTransaction,
     config: MatchConfig,
     window_days: int,
+    llm_scores: dict[tuple[int, int], int] | None = None,
 ) -> PairScore:
     """Composite candidate-ranking score for a bank/ledger pair.
 
@@ -118,6 +146,10 @@ def score_pair(
       date_score   = 1 - (abs(date_diff_days) / window_days), clamped 0..1.
       desc_score   = rapidfuzz.fuzz.token_sort_ratio(...) / 100 (or the LLM
                       override, see `description_score`).
+
+    `llm_scores`, if given, is a dict keyed by
+    `(bank_txn.source_row, ledger_txn.source_row)` holding a pre-computed
+    LLM description score for that specific pair; see `description_score`.
     """
     bank_amount = net_amount(bank_txn)
     ledger_amount = net_amount(ledger_txn)
@@ -139,7 +171,7 @@ def score_pair(
     else:
         date_score = Decimal("1") if date_diff_days == 0 else Decimal("0")
 
-    desc = description_score(bank_txn, ledger_txn)
+    desc = description_score(bank_txn, ledger_txn, llm_scores)
     desc_score_fraction = Decimal(desc) / Decimal("100")
 
     score = (
