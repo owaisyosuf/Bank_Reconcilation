@@ -25,6 +25,7 @@ try:
 except ImportError:  # pragma: no cover - openpyxl is a hard dependency
     openpyxl = None
 
+from app.export.excel_report import build_excel_report
 from app.matching.engine import ReconciliationResult, reconcile
 from app.matching.scoring import MatchConfig, MatchRecord
 from app.parsers import BANK_ADAPTERS, get_parser
@@ -415,10 +416,21 @@ def _render_tabs(result: ReconciliationResult) -> None:
         _show_table(result.ledger_only)
 
 
-def _render_export_section() -> None:
+def _render_export_section(result: ReconciliationResult) -> None:
     st.subheader("Export")
     if st.button("Export to Excel"):
-        st.info("Excel export coming in M4")
+        try:
+            excel_bytes = build_excel_report(result)
+        except Exception as exc:
+            st.error(f"Could not build the Excel report: {exc}")
+            return
+        file_name = f"reconciliation_{datetime.date.today().isoformat()}.xlsx"
+        st.download_button(
+            "Download reconciliation report",
+            data=excel_bytes,
+            file_name=file_name,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -514,7 +526,7 @@ def main() -> None:
         result = reconcile(bank_txns, ledger_txns, config)
         _render_summary(result, bank_txns)
         _render_tabs(result)
-        _render_export_section()
+        _render_export_section(result)
     else:
         st.info("Upload both a bank statement and a ledger file to see the reconciliation.")
 
