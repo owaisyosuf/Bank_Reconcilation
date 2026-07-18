@@ -9,8 +9,20 @@ skills/reconciliation-matcher/SKILL.md:
 4. Three duplicate amounts same day with distinct descriptions -> all matched correctly
 5. Duplicate amounts with near-identical descriptions -> all REVIEW (ambiguous)
 6. Bank charge present only in bank statement -> bank_only
-7. Signed direction: bank debit must not match ledger credit of same magnitude
+7. Signed direction: bank debit MUST match ledger credit of same magnitude
+   (opposite sides, same real transaction); bank debit must NOT match ledger
+   DEBIT of the same magnitude (same-side false positive).
 8. 1,000-row randomized round-trip: >= 99% recovered (EXACT or TOLERANCE)
+
+Bank-vs-ledger sign convention: a bank STATEMENT is a passbook (credit = money
+in, debit = money out). A company's own LEDGER records the bank account as an
+ASSET, so the SAME real transaction is entered on the OPPOSITE side: a
+receipt is a bank credit but a ledger DEBIT; a payment is a bank debit but a
+ledger CREDIT. See skills/reconciliation-matcher/SKILL.md. `make_txn(...,
+is_ledger=True)` builds a transaction using the ledger-side convention so
+that a bank txn and its intentionally-matching ledger counterpart can both be
+constructed from the same "positive = receipt / negative = payment" signed
+amount.
 """
 
 import datetime
@@ -30,14 +42,35 @@ def make_txn(
     amount,
     source_row: int,
     raw: dict | None = None,
+    is_ledger: bool = False,
 ) -> StandardTransaction:
-    """Build a StandardTransaction from a signed amount (positive = credit,
-    negative = debit)."""
+    """Build a StandardTransaction from a signed amount (positive = a
+    receipt, negative = a payment, from the underlying real-world
+    transaction's point of view).
+
+    - `is_ledger=False` (default, bank side): positive -> credit, negative ->
+      debit (a passbook: credit = money in).
+    - `is_ledger=True` (ledger side): positive -> debit, negative -> credit
+      (the ledger records the bank account as an asset, so a receipt is a
+      DEBIT and a payment is a CREDIT -- the opposite of the bank side).
+
+    This lets a bank/ledger pair meant to represent the SAME real
+    transaction be built from the same signed `amount` value, e.g.
+    `make_txn(d, desc, 50000, row)` (bank credit) and
+    `make_txn(d, desc, 50000, row, is_ledger=True)` (ledger debit) are the
+    two correctly-opposite-sided halves of one Rs 50,000 deposit.
+    """
     amount = Decimal(str(amount))
-    if amount >= 0:
-        credit, debit = amount, Decimal("0")
+    if is_ledger:
+        if amount >= 0:
+            debit, credit = amount, Decimal("0")
+        else:
+            debit, credit = Decimal("0"), -amount
     else:
-        credit, debit = Decimal("0"), -amount
+        if amount >= 0:
+            credit, debit = amount, Decimal("0")
+        else:
+            credit, debit = Decimal("0"), -amount
     return StandardTransaction(
         date=date,
         description=description,
@@ -55,8 +88,10 @@ def make_txn(
 
 
 def test_exact_match_same_date():
+    # Bank credit (receipt) of 15000 pairs with the correctly-entered ledger
+    # DEBIT (asset increase) of 15000 -- opposite sides, same transaction.
     bank = [make_txn(BASE_DATE, "Payment ABC Traders", 15000, 1)]
-    ledger = [make_txn(BASE_DATE, "Payment ABC Traders", 15000, 1)]
+    ledger = [make_txn(BASE_DATE, "Payment ABC Traders", 15000, 1, is_ledger=True)]
 
     result = reconcile(bank, ledger, MatchConfig())
 
@@ -82,7 +117,7 @@ def test_exact_match_same_date():
 
 def test_rs_1_50_difference_is_tolerance():
     bank = [make_txn(BASE_DATE, "Utility Bill Payment", "1000.00", 1)]
-    ledger = [make_txn(BASE_DATE, "Utility Bill Payment", "998.50", 1)]
+    ledger = [make_txn(BASE_DATE, "Utility Bill Payment", "998.50", 1, is_ledger=True)]
 
     result = reconcile(bank, ledger, MatchConfig())
 
@@ -100,7 +135,7 @@ def test_amount_diff_beyond_tolerance_is_unmatched_or_review():
     # Rs 10 difference on a small amount (Rs 100) is well beyond both the
     # Rs 2 absolute and 0.5% relative tolerance -> not TOLERANCE.
     bank = [make_txn(BASE_DATE, "Misc Payment", "100.00", 1)]
-    ledger = [make_txn(BASE_DATE, "Misc Payment", "110.00", 1)]
+    ledger = [make_txn(BASE_DATE, "Misc Payment", "110.00", 1, is_ledger=True)]
 
     result = reconcile(bank, ledger, MatchConfig())
 
@@ -115,9 +150,9 @@ def test_amount_diff_beyond_tolerance_is_unmatched_or_review():
 
 def test_exact_amount_date_offsets():
     ledger = [
-        make_txn(BASE_DATE, "Vendor Payment Alpha", "5000.00", 1),
-        make_txn(BASE_DATE, "Vendor Payment Beta", "7000.00", 2),
-        make_txn(BASE_DATE, "Vendor Payment Gamma", "9000.00", 3),
+        make_txn(BASE_DATE, "Vendor Payment Alpha", "5000.00", 1, is_ledger=True),
+        make_txn(BASE_DATE, "Vendor Payment Beta", "7000.00", 2, is_ledger=True),
+        make_txn(BASE_DATE, "Vendor Payment Gamma", "9000.00", 3, is_ledger=True),
     ]
     bank = [
         # +2 days, within date_window_days(3) -> EXACT
@@ -153,9 +188,9 @@ def test_exact_amount_date_offsets():
 def test_duplicate_amounts_distinct_descriptions_all_match_correctly():
     amount = "50000.00"
     ledger = [
-        make_txn(BASE_DATE, "Utility Bill - K-Electric", amount, 1),
-        make_txn(BASE_DATE, "Office Rent - Head Office", amount, 2),
-        make_txn(BASE_DATE, "Salary Payment - John Doe", amount, 3),
+        make_txn(BASE_DATE, "Utility Bill - K-Electric", amount, 1, is_ledger=True),
+        make_txn(BASE_DATE, "Office Rent - Head Office", amount, 2, is_ledger=True),
+        make_txn(BASE_DATE, "Salary Payment - John Doe", amount, 3, is_ledger=True),
     ]
     # Same descriptions, different row order/numbers, to force the engine to
     # rely on description similarity rather than row proximity.
@@ -191,8 +226,8 @@ def test_duplicate_amounts_ambiguous_descriptions_all_review():
     amount = "3000.00"
     description = "Cheque Deposit"
     ledger = [
-        make_txn(BASE_DATE, description, amount, 1),
-        make_txn(BASE_DATE, description, amount, 2),
+        make_txn(BASE_DATE, description, amount, 1, is_ledger=True),
+        make_txn(BASE_DATE, description, amount, 2, is_ledger=True),
     ]
     bank = [
         make_txn(BASE_DATE, description, amount, 1),
@@ -221,7 +256,7 @@ def test_bank_only_charge_not_in_ledger():
         make_txn(BASE_DATE, "SMS Alert Charges", "50.00", 2),
     ]
     ledger = [
-        make_txn(BASE_DATE, "Payment XYZ Corp", "20000.00", 1),
+        make_txn(BASE_DATE, "Payment XYZ Corp", "20000.00", 1, is_ledger=True),
     ]
 
     result = reconcile(bank, ledger, MatchConfig())
@@ -238,16 +273,32 @@ def test_bank_only_charge_not_in_ledger():
 
 
 # ---------------------------------------------------------------------------
-# 7. Signed direction: bank debit must not match ledger credit of same magnitude
+# 7. Signed direction: bank debit MUST match ledger credit of same magnitude
+#    (opposite sides, same transaction); bank debit must NOT match ledger
+#    DEBIT of the same magnitude (same-side false positive).
 # ---------------------------------------------------------------------------
 
 
-def test_signed_direction_debit_does_not_match_opposite_credit():
-    # Bank shows this as a debit (money out); ledger (wrongly, or for a
-    # different, offsetting transaction) has a credit of the same magnitude,
-    # same day, same description. They must NOT be matched.
+def test_signed_direction_debit_matches_opposite_side_ledger_credit():
+    # A Rs 10,000 payment (money out): the bank statement shows a debit; a
+    # correctly-entered ledger records the SAME transaction as a CREDIT
+    # (asset decrease). Opposite sides, same real transaction -> MUST match.
     bank = [make_txn(BASE_DATE, "Transfer XYZ", "-10000.00", 1)]
-    ledger = [make_txn(BASE_DATE, "Transfer XYZ", "10000.00", 1)]
+    ledger = [make_txn(BASE_DATE, "Transfer XYZ", "-10000.00", 1, is_ledger=True)]
+
+    result = reconcile(bank, ledger, MatchConfig())
+
+    assert len(result.exact) == 1
+    assert result.exact[0].amount_diff == Decimal("0")
+
+
+def test_signed_direction_same_side_debit_debit_does_not_falsely_match():
+    # A bank DEBIT of Rs 10,000 and a ledger entry ALSO recorded as a DEBIT
+    # of Rs 10,000 (same side) do NOT represent the same real transaction
+    # under correct double-entry bookkeeping -- they must NOT be matched,
+    # even with identical amount/date/description.
+    bank = [make_txn(BASE_DATE, "Transfer XYZ", "-10000.00", 1)]
+    ledger = [make_txn(BASE_DATE, "Transfer XYZ", "-10000.00", 1)]  # same-side (bug repro)
 
     result = reconcile(bank, ledger, MatchConfig())
 
@@ -256,18 +307,6 @@ def test_signed_direction_debit_does_not_match_opposite_credit():
     assert result.review == []
     assert len(result.bank_only) == 1
     assert len(result.ledger_only) == 1
-    assert result.bank_only[0].amount_diff == Decimal("-10000.00")
-    assert result.ledger_only[0].amount_diff == Decimal("10000.00")
-
-
-def test_signed_direction_same_direction_still_matches():
-    # Sanity check: same-direction debits do match normally.
-    bank = [make_txn(BASE_DATE, "Transfer XYZ", "-10000.00", 1)]
-    ledger = [make_txn(BASE_DATE, "Transfer XYZ", "-10000.00", 1)]
-
-    result = reconcile(bank, ledger, MatchConfig())
-
-    assert len(result.exact) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -297,12 +336,18 @@ def test_randomized_round_trip_1000_rows_recovers_99_percent():
         amount = Decimal(cents) / Decimal("100")
         d = BASE_DATE + datetime.timedelta(days=rng.randint(0, 300))
         desc = f"{rng.choice(descriptions)} #{i}"
-        ledger.append(make_txn(d, desc, amount, i + 1))
+        # Ledger side: built with the ledger's own (opposite-of-bank)
+        # debit/credit convention.
+        ledger.append(make_txn(d, desc, amount, i + 1, is_ledger=True))
 
     bank = []
     perturbed_count = 0
     for i, l in enumerate(ledger):
-        amount = net_amount(l)
+        # Derive the canonical signed amount using the LEDGER convention,
+        # then build the bank counterpart with the (opposite) bank
+        # convention -- this reproduces a correctly-opposite-sided
+        # bank/ledger pair for the same real transaction.
+        amount = net_amount(l, is_ledger=True)
         d = l.date
         desc = l.description
         if rng.random() < 0.2:
@@ -323,3 +368,76 @@ def test_randomized_round_trip_1000_rows_recovers_99_percent():
         f"review={len(result.review)} bank_only={len(result.bank_only)} "
         f"ledger_only={len(result.ledger_only)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Regression tests: bank-vs-ledger double-entry sign convention.
+#
+# A bank STATEMENT is a passbook from the customer's cash perspective:
+# credit = money in, debit = money out. A company's own LEDGER records the
+# bank account as an ASSET, so under standard double-entry rules the SAME
+# real-world transaction is recorded on the OPPOSITE side: a receipt is a
+# bank credit but a ledger DEBIT (asset increase); a payment is a bank debit
+# but a ledger CREDIT (asset decrease). These tests lock in that behavior
+# explicitly with the exact worked examples from the accounting bug report,
+# so a regression back to "same-side" matching is caught immediately.
+# ---------------------------------------------------------------------------
+
+
+def test_regression_worked_example_rs50000_deposit_bank_credit_ledger_debit():
+    # Worked example: a Rs 50,000 deposit (money received).
+    #   Bank statement: credit=50000, debit=0 (bank convention: credit = in).
+    #   Company ledger (correct bookkeeping): debit=50000, credit=0 (ledger
+    #   convention: debit = asset increase = inflow).
+    # These represent the SAME transaction and MUST match at EXACT.
+    bank = [make_txn(BASE_DATE, "Deposit - Customer Payment", "50000.00", 1)]
+    ledger = [
+        make_txn(BASE_DATE, "Deposit - Customer Payment", "50000.00", 1, is_ledger=True)
+    ]
+
+    assert bank[0].credit == Decimal("50000.00") and bank[0].debit == Decimal("0")
+    assert ledger[0].debit == Decimal("50000.00") and ledger[0].credit == Decimal("0")
+
+    result = reconcile(bank, ledger, MatchConfig())
+
+    assert len(result.exact) == 1
+    assert result.exact[0].amount_diff == Decimal("0")
+
+
+def test_regression_worked_example_rs20000_payment_bank_debit_ledger_credit():
+    # Worked example: a Rs 20,000 payment (money paid out).
+    #   Bank statement: debit=20000, credit=0.
+    #   Company ledger (correct bookkeeping): credit=20000, debit=0 (asset
+    #   decrease).
+    # These represent the SAME transaction and MUST match at EXACT.
+    bank = [make_txn(BASE_DATE, "Payment - Supplier Invoice", "-20000.00", 1)]
+    ledger = [
+        make_txn(BASE_DATE, "Payment - Supplier Invoice", "-20000.00", 1, is_ledger=True)
+    ]
+
+    assert bank[0].debit == Decimal("20000.00") and bank[0].credit == Decimal("0")
+    assert ledger[0].credit == Decimal("20000.00") and ledger[0].debit == Decimal("0")
+
+    result = reconcile(bank, ledger, MatchConfig())
+
+    assert len(result.exact) == 1
+    assert result.exact[0].amount_diff == Decimal("0")
+
+
+def test_regression_same_side_bank_credit_ledger_credit_does_not_falsely_match():
+    # A bank credit of Rs 50,000 and a ledger entry ALSO recorded as a credit
+    # of Rs 50,000 (same side, e.g. a mis-entered ledger row) are NOT the
+    # same real transaction under correct double-entry bookkeeping -- they
+    # must not be matched even though amount/date/description all line up.
+    bank = [make_txn(BASE_DATE, "Deposit - Customer Payment", "50000.00", 1)]
+    ledger = [
+        make_txn(BASE_DATE, "Deposit - Customer Payment", "50000.00", 1)
+    ]  # is_ledger=False: same-side bug repro, not the correct bookkeeping
+
+    result = reconcile(bank, ledger, MatchConfig())
+
+    assert result.exact == []
+    assert result.tolerance == []
+    assert result.review == []
+    assert len(result.bank_only) == 1
+    assert len(result.ledger_only) == 1

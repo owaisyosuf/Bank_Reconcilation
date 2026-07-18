@@ -19,9 +19,25 @@ class MatchConfig:
 
 Effective amount tolerance for a pair = `max(abs_tolerance, pct_tolerance * bank_amount)`.
 
+### Bank vs. ledger sign convention (important)
+
+A bank STATEMENT is a passbook from the customer's cash perspective: `credit` = money
+IN, `debit` = money OUT. A company's own LEDGER records the bank account as an ASSET,
+so under standard double-entry rules the *same real transaction* is recorded on the
+**opposite** side: a receipt is a bank credit but a ledger **debit** (asset increase); a
+payment is a bank debit but a ledger **credit** (asset decrease). So a matching pair is
+always *opposite-sided*: bank credit ↔ ledger debit (receipt), bank debit ↔ ledger credit
+(payment) — never same-side. `net_amount(txn, is_ledger=...)` encodes this: bank side
+uses `credit - debit`, ledger side uses `debit - credit` (sign-flipped), so that the
+signed amounts of a true matching pair are equal.
+
 ## The Pipeline (order is fixed)
 
-Work on **signed net amount** per transaction: `credit - debit`. Bank debits match ledger payments, etc. — direction must agree.
+Work on **signed net amount** per transaction, using the correct side-specific
+convention above (`net_amount(bank_txn)` = `credit - debit`;
+`net_amount(ledger_txn, is_ledger=True)` = `debit - credit`). Bank credits match ledger
+debits (receipts) and bank debits match ledger credits (payments) of the same real
+transaction — direction must agree using this opposite-side rule, not same-side.
 
 ### Pass 1 — EXACT
 - `bank.amount == ledger.amount` (to the paisa)
@@ -84,7 +100,9 @@ Never remove fields from this contract — UI and Excel export depend on every o
 4. Three duplicate amounts same day with distinct descriptions → all matched correctly
 5. Duplicate amounts with near-identical descriptions → all REVIEW (ambiguous)
 6. Bank charge present only in bank statement → bank_only
-7. Signed direction: bank debit must not match ledger credit of same magnitude
+7. Signed direction: bank debit of X MUST match ledger credit of X (opposite sides,
+   same real transaction — a payment); bank debit must NOT match ledger DEBIT of the
+   same magnitude (that would be a same-side false positive)
 8. 1,000-row randomized round-trip: generate ledger, perturb into fake bank statement (±Rs 2, ±2 days on 20% of rows), assert ≥ 99% recovered
 
 ## LLM Hook (context only — implemented outside this layer)

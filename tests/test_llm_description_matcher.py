@@ -48,13 +48,16 @@ def test_raises_when_no_api_key(monkeypatch):
 
 
 def test_shortlist_only_includes_amount_and_date_matches():
+    # Bank credit (receipt) pairs with a ledger DEBIT of the same amount --
+    # opposite sides, per real bookkeeping (bank passbook vs. ledger asset
+    # convention). See app/matching/scoring.py's net_amount(is_ledger=...).
     bank = [
         _txn(datetime.date(2026, 1, 10), "ABC TRADERS", credit="1000", source_row=1),
     ]
     ledger = [
-        _txn(datetime.date(2026, 1, 10), "A.B.C Traders", credit="1000", source_row=1),  # in window
-        _txn(datetime.date(2026, 1, 10), "XYZ CORP", credit="9999", source_row=2),  # amount too far
-        _txn(datetime.date(2026, 3, 1), "A.B.C Traders", credit="1000", source_row=3),  # date too far
+        _txn(datetime.date(2026, 1, 10), "A.B.C Traders", debit="1000", source_row=1),  # in window
+        _txn(datetime.date(2026, 1, 10), "XYZ CORP", debit="9999", source_row=2),  # amount too far
+        _txn(datetime.date(2026, 3, 1), "A.B.C Traders", debit="1000", source_row=3),  # date too far
     ]
 
     calls = []
@@ -74,7 +77,7 @@ def test_shortlist_only_includes_amount_and_date_matches():
 
 def test_scores_clamped_to_0_100():
     bank = [_txn(datetime.date(2026, 1, 1), "ABC TRADERS", credit="1000", source_row=1)]
-    ledger = [_txn(datetime.date(2026, 1, 1), "A.B.C Traders", credit="1000", source_row=1)]
+    ledger = [_txn(datetime.date(2026, 1, 1), "A.B.C Traders", debit="1000", source_row=1)]
 
     def fake_call(bank_description, candidate_descriptions):
         return [150]  # out of range, should clamp to 100
@@ -91,8 +94,8 @@ def test_gemini_failure_degrades_gracefully_for_that_bank_txn():
         _txn(datetime.date(2026, 1, 1), "BAD ONE", credit="2000", source_row=2),
     ]
     ledger = [
-        _txn(datetime.date(2026, 1, 1), "GOOD ONE", credit="1000", source_row=1),
-        _txn(datetime.date(2026, 1, 1), "BAD ONE", credit="2000", source_row=2),
+        _txn(datetime.date(2026, 1, 1), "GOOD ONE", debit="1000", source_row=1),
+        _txn(datetime.date(2026, 1, 1), "BAD ONE", debit="2000", source_row=2),
     ]
 
     def flaky_call(bank_description, candidate_descriptions):
@@ -153,8 +156,8 @@ def test_end_to_end_with_matching_engine_reconcile():
         _txn(datetime.date(2026, 1, 15), "NEFT REF 002", credit="50000", source_row=2),
     ]
     ledger = [
-        _txn(datetime.date(2026, 1, 15), "Payment A", credit="50000", source_row=1),
-        _txn(datetime.date(2026, 1, 15), "Payment B", credit="50000", source_row=2),
+        _txn(datetime.date(2026, 1, 15), "Payment A", debit="50000", source_row=1),
+        _txn(datetime.date(2026, 1, 15), "Payment B", debit="50000", source_row=2),
     ]
 
     def fake_call(bank_description, candidate_descriptions):

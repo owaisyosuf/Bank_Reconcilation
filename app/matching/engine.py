@@ -138,7 +138,7 @@ def _build_exact_candidates(
         b_amt = net_amount(b)
         for li in free_ledger:
             l = ledger_txns[li]
-            l_amt = net_amount(l)
+            l_amt = net_amount(l, is_ledger=True)
             if b_amt != l_amt:
                 continue
             date_diff = (b.date - l.date).days
@@ -251,7 +251,7 @@ def _run_pass2_tolerance(
         tol = effective_tolerance(b_amt, config)
         for li in free_ledger:
             l = ledger_txns[li]
-            l_amt = net_amount(l)
+            l_amt = net_amount(l, is_ledger=True)
             amount_diff = b_amt - l_amt
             if amount_diff == 0:
                 continue
@@ -287,7 +287,7 @@ def _run_pass3_review(
         tol = effective_tolerance(b_amt, config)
         for li in free_ledger:
             l = ledger_txns[li]
-            l_amt = net_amount(l)
+            l_amt = net_amount(l, is_ledger=True)
             amount_diff = b_amt - l_amt
             date_diff = (b.date - l.date).days
 
@@ -387,7 +387,7 @@ def reconcile(
                 tier="UNMATCHED",
                 bank_txn=None,
                 ledger_txn=l,
-                amount_diff=net_amount(l),
+                amount_diff=net_amount(l, is_ledger=True),
                 date_diff_days=0,
                 description_score=0,
                 reason="no_match_ledger_only",

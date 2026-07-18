@@ -70,14 +70,34 @@ class PairScore:
     effective_tolerance: Decimal
 
 
-def net_amount(txn: StandardTransaction) -> Decimal:
-    """Signed net amount for a transaction: credit - debit.
+def net_amount(txn: StandardTransaction, is_ledger: bool = False) -> Decimal:
+    """Signed net amount for a transaction, honoring which side of the
+    double-entry convention it comes from.
+
+    A bank STATEMENT is written from the customer's cash perspective (a
+    passbook): credit = money in, debit = money out. A company's own
+    LEDGER records the bank account as an ASSET, so the same real-world
+    transaction is recorded on the OPPOSITE side: a receipt (bank credit)
+    is a ledger DEBIT (asset increase); a payment (bank debit) is a
+    ledger CREDIT (asset decrease). See
+    `skills/reconciliation-matcher/SKILL.md` for the worked examples.
+
+    - `is_ledger=False` (default, bank side): `credit - debit`.
+    - `is_ledger=True` (ledger side): `debit - credit` -- the sign is
+      flipped relative to the bank-side formula so that a bank credit and
+      the correctly-entered ledger debit for the same transaction both
+      net out to the same positive signed amount (and therefore compare
+      equal), while a same-side bank-debit/ledger-debit collision (a
+      different, coincidental transaction) does not.
 
     Working on signed amounts (rather than absolute value) is what makes
-    direction agreement automatic: a bank debit (negative net amount) can
-    never equal/near a ledger credit (positive net amount) of the same
-    magnitude, because their signed difference is ~2x the magnitude, not 0.
+    direction agreement automatic: given the correct per-side convention
+    above, a bank debit can never equal/near a ledger DEBIT of the same
+    magnitude (that would be a same-side false positive), because their
+    signed difference is ~2x the magnitude, not 0.
     """
+    if is_ledger:
+        return txn.debit - txn.credit
     return txn.credit - txn.debit
 
 
@@ -152,7 +172,7 @@ def score_pair(
     LLM description score for that specific pair; see `description_score`.
     """
     bank_amount = net_amount(bank_txn)
-    ledger_amount = net_amount(ledger_txn)
+    ledger_amount = net_amount(ledger_txn, is_ledger=True)
     amount_diff = bank_amount - ledger_amount
     tolerance = effective_tolerance(bank_amount, config)
 

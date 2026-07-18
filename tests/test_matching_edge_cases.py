@@ -7,10 +7,15 @@ transactions, negative-vs-negative net amounts, very large amounts,
 a larger (5+) group of truly identical duplicates, date_window_days=0,
 and review_date_window_days == date_window_days.
 
-Audit finding: no bugs were found in engine.py/scoring.py for any of these
-cases -- every one already behaves correctly (no crashes, no
-ZeroDivisionError, correct tiering). This file exists purely to lock that
-behavior in with regression coverage; see the M7 audit report for details.
+Bank-vs-ledger sign convention: a bank STATEMENT is a passbook (credit =
+money in, debit = money out). A company's own LEDGER records the bank
+account as an ASSET, so the SAME real transaction is entered on the
+OPPOSITE side: a receipt is a bank credit but a ledger DEBIT; a payment is
+a bank debit but a ledger CREDIT. See
+skills/reconciliation-matcher/SKILL.md. `make_txn(..., is_ledger=True)`
+builds a transaction using the ledger-side convention so an
+intentionally-matching bank/ledger pair can be built from the same signed
+"amount" value.
 """
 
 import datetime
@@ -29,14 +34,27 @@ def make_txn(
     amount,
     source_row: int,
     raw: dict | None = None,
+    is_ledger: bool = False,
 ) -> StandardTransaction:
-    """Build a StandardTransaction from a signed amount (positive = credit,
-    negative = debit)."""
+    """Build a StandardTransaction from a signed amount (positive = a
+    receipt, negative = a payment).
+
+    - `is_ledger=False` (default, bank side): positive -> credit, negative ->
+      debit.
+    - `is_ledger=True` (ledger side): positive -> debit, negative -> credit
+      (the ledger's asset convention -- opposite of the bank side).
+    """
     amount = Decimal(str(amount))
-    if amount >= 0:
-        credit, debit = amount, Decimal("0")
+    if is_ledger:
+        if amount >= 0:
+            debit, credit = amount, Decimal("0")
+        else:
+            debit, credit = Decimal("0"), -amount
     else:
-        credit, debit = Decimal("0"), -amount
+        if amount >= 0:
+            credit, debit = amount, Decimal("0")
+        else:
+            credit, debit = Decimal("0"), -amount
     return StandardTransaction(
         date=date,
         description=description,
@@ -108,7 +126,7 @@ def test_reconcile_empty_bank_all_ledger_only():
 
 def test_single_bank_single_ledger_exact_match_no_crash():
     bank = [make_txn(BASE_DATE, "Only Payment", "500.00", 1)]
-    ledger = [make_txn(BASE_DATE, "Only Payment", "500.00", 1)]
+    ledger = [make_txn(BASE_DATE, "Only Payment", "500.00", 1, is_ledger=True)]
 
     result = reconcile(bank, ledger, MatchConfig())
 
@@ -125,7 +143,7 @@ def test_single_bank_single_ledger_exact_match_no_crash():
 
 def test_zero_amount_transactions_match_each_other():
     bank = [make_txn(BASE_DATE, "Zero Value Adjustment", "0", 1)]
-    ledger = [make_txn(BASE_DATE, "Zero Value Adjustment", "0", 1)]
+    ledger = [make_txn(BASE_DATE, "Zero Value Adjustment", "0", 1, is_ledger=True)]
 
     result = reconcile(bank, ledger, MatchConfig())
 
@@ -147,7 +165,7 @@ def test_effective_tolerance_zero_amount_uses_abs_tolerance_only():
 
 def test_zero_amount_bank_txn_within_rs2_of_zero_ledger_is_tolerance():
     bank = [make_txn(BASE_DATE, "Rounding artifact", "1.50", 1)]
-    ledger = [make_txn(BASE_DATE, "Rounding artifact", "0", 1)]
+    ledger = [make_txn(BASE_DATE, "Rounding artifact", "0", 1, is_ledger=True)]
 
     result = reconcile(bank, ledger, MatchConfig())
 
@@ -162,22 +180,23 @@ def test_zero_amount_bank_txn_within_rs2_of_zero_ledger_is_tolerance():
 
 
 def test_negative_net_amount_both_sides_exact_match():
-    # Both sides record this as a debit (a reversed/refunded transaction),
-    # net_amount = credit - debit is negative on both sides.
+    # Bank side records a Rs 5,000 payment as a debit (money out). The
+    # correctly-entered ledger counterpart is a CREDIT of the same
+    # magnitude (asset decrease) -- opposite sides, same real transaction.
     bank = [make_txn(BASE_DATE, "Reversal - Order 991", "-5000.00", 1)]
-    ledger = [make_txn(BASE_DATE, "Reversal - Order 991", "-5000.00", 1)]
+    ledger = [make_txn(BASE_DATE, "Reversal - Order 991", "-5000.00", 1, is_ledger=True)]
 
     result = reconcile(bank, ledger, MatchConfig())
 
     assert len(result.exact) == 1
     assert net_amount(bank[0]) == Decimal("-5000.00")
-    assert net_amount(ledger[0]) == Decimal("-5000.00")
+    assert net_amount(ledger[0], is_ledger=True) == Decimal("-5000.00")
     assert result.exact[0].amount_diff == Decimal("0")
 
 
 def test_negative_net_amount_both_sides_tolerance_match():
     bank = [make_txn(BASE_DATE, "Reversal - Order 992", "-5000.00", 1)]
-    ledger = [make_txn(BASE_DATE, "Reversal - Order 992", "-4999.00", 1)]
+    ledger = [make_txn(BASE_DATE, "Reversal - Order 992", "-4999.00", 1, is_ledger=True)]
 
     result = reconcile(bank, ledger, MatchConfig())
 
@@ -187,11 +206,15 @@ def test_negative_net_amount_both_sides_tolerance_match():
     assert result.tolerance[0].amount_diff == Decimal("-1.00")
 
 
-def test_negative_net_amount_direction_still_enforced():
-    # A debit-side reversal (negative) must not match a credit of the same
-    # magnitude on the other side, even negative-vs-negative logic in place.
+def test_negative_net_amount_same_side_debit_debit_not_falsely_matched():
+    # Same-side collision: bank records a Rs 3,000 debit (payment out), and
+    # the ledger ALSO happens to record a Rs 3,000 debit (e.g. a
+    # mis-entered row, or a genuinely different transaction). Under correct
+    # double-entry bookkeeping these are NOT the same transaction (a real
+    # matching ledger counterpart would be a CREDIT, not a debit) and must
+    # NOT be matched, even with identical amount/date/description.
     bank = [make_txn(BASE_DATE, "Reversal - Order 993", "-3000.00", 1)]
-    ledger = [make_txn(BASE_DATE, "Reversal - Order 993", "3000.00", 1)]
+    ledger = [make_txn(BASE_DATE, "Reversal - Order 993", "-3000.00", 1)]  # same-side, is_ledger=False
 
     result = reconcile(bank, ledger, MatchConfig())
 
@@ -200,6 +223,21 @@ def test_negative_net_amount_direction_still_enforced():
     assert result.review == []
     assert len(result.bank_only) == 1
     assert len(result.ledger_only) == 1
+
+
+def test_negative_net_amount_opposite_side_debit_credit_matches():
+    # Opposite-side pairing of the same magnitude: bank debit of Rs 3,000
+    # (payment out) correctly pairs with a ledger CREDIT of Rs 3,000 (asset
+    # decrease) for the same real transaction -- this MUST match, unlike
+    # the same-side collision above.
+    bank = [make_txn(BASE_DATE, "Reversal - Order 994", "-3000.00", 1)]
+    ledger = [make_txn(BASE_DATE, "Reversal - Order 994", "-3000.00", 1, is_ledger=True)]
+
+    result = reconcile(bank, ledger, MatchConfig())
+
+    assert result.exact != []
+    assert len(result.exact) == 1
+    assert result.exact[0].amount_diff == Decimal("0")
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +255,7 @@ def test_large_amount_effective_tolerance_picks_pct_over_abs():
 
 def test_large_amount_rs1_diff_is_tolerance_not_exact():
     bank = [make_txn(BASE_DATE, "Large Settlement", "50000000.00", 1)]
-    ledger = [make_txn(BASE_DATE, "Large Settlement", "50000001.00", 1)]
+    ledger = [make_txn(BASE_DATE, "Large Settlement", "50000001.00", 1, is_ledger=True)]
 
     result = reconcile(bank, ledger, MatchConfig())
 
@@ -230,7 +268,7 @@ def test_large_amount_diff_beyond_pct_tolerance_is_not_tolerance():
     # Rs 500,000 diff on Rs 50,000,000 (1%) exceeds the 0.5% pct tolerance
     # (Rs 250,000) and the Rs 2 absolute tolerance -- should not match.
     bank = [make_txn(BASE_DATE, "Large Settlement 2", "50000000.00", 1)]
-    ledger = [make_txn(BASE_DATE, "Large Settlement 2", "49500000.00", 1)]
+    ledger = [make_txn(BASE_DATE, "Large Settlement 2", "49500000.00", 1, is_ledger=True)]
 
     result = reconcile(bank, ledger, MatchConfig())
 
@@ -247,7 +285,7 @@ def test_five_true_duplicates_all_become_review_one_to_one():
     amount = "1000.00"
     description = "Cash Deposit"
     bank = [make_txn(BASE_DATE, description, amount, i + 1) for i in range(5)]
-    ledger = [make_txn(BASE_DATE, description, amount, i + 1) for i in range(5)]
+    ledger = [make_txn(BASE_DATE, description, amount, i + 1, is_ledger=True) for i in range(5)]
 
     result = reconcile(bank, ledger, MatchConfig())
 
@@ -278,7 +316,7 @@ def test_six_true_duplicates_with_one_extra_bank_row_leaves_one_bank_only():
     amount = "2500.00"
     description = "Cash Deposit"
     bank = [make_txn(BASE_DATE, description, amount, i + 1) for i in range(6)]
-    ledger = [make_txn(BASE_DATE, description, amount, i + 1) for i in range(5)]
+    ledger = [make_txn(BASE_DATE, description, amount, i + 1, is_ledger=True) for i in range(5)]
 
     result = reconcile(bank, ledger, MatchConfig())
 
@@ -298,7 +336,7 @@ def test_six_true_duplicates_with_one_extra_bank_row_leaves_one_bank_only():
 def test_date_window_zero_same_day_matches_exact_no_division_error():
     config = MatchConfig(date_window_days=0)
     bank = [make_txn(BASE_DATE, "Same Day Payment", "1000.00", 1)]
-    ledger = [make_txn(BASE_DATE, "Same Day Payment", "1000.00", 1)]
+    ledger = [make_txn(BASE_DATE, "Same Day Payment", "1000.00", 1, is_ledger=True)]
 
     result = reconcile(bank, ledger, config)
 
@@ -310,7 +348,13 @@ def test_date_window_zero_next_day_is_not_exact_but_review():
     config = MatchConfig(date_window_days=0)
     bank = [make_txn(BASE_DATE, "Same Day Payment", "1000.00", 1)]
     ledger = [
-        make_txn(BASE_DATE + datetime.timedelta(days=1), "Same Day Payment", "1000.00", 1)
+        make_txn(
+            BASE_DATE + datetime.timedelta(days=1),
+            "Same Day Payment",
+            "1000.00",
+            1,
+            is_ledger=True,
+        )
     ]
 
     result = reconcile(bank, ledger, config)
@@ -337,8 +381,8 @@ def test_review_window_equals_date_window_no_condition_a_matches():
     config = MatchConfig(date_window_days=5, review_date_window_days=5)
 
     ledger = [
-        make_txn(BASE_DATE, "Within window", "1000.00", 1),
-        make_txn(BASE_DATE, "Beyond window", "2000.00", 2),
+        make_txn(BASE_DATE, "Within window", "1000.00", 1, is_ledger=True),
+        make_txn(BASE_DATE, "Beyond window", "2000.00", 2, is_ledger=True),
     ]
     bank = [
         # Exactly at the boundary (5 days) -> still EXACT.

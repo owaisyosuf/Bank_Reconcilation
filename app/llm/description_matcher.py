@@ -83,7 +83,7 @@ def _build_shortlist(
         tolerance = effective_tolerance(bank_amount, config)
         candidates = []
         for li, ledger in enumerate(ledger_txns):
-            amount_diff = abs(bank_amount - net_amount(ledger))
+            amount_diff = abs(bank_amount - net_amount(ledger, is_ledger=True))
             if amount_diff > tolerance:
                 continue
             date_diff = abs((bank.date - ledger.date).days)

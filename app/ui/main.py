@@ -411,7 +411,10 @@ def _records_to_df(records: list[MatchRecord]) -> pd.DataFrame:
 def _style_by_tier(df: pd.DataFrame):
     def _row_style(row):
         color = TIER_COLORS.get(row.get("Tier"), "")
-        style = f"background-color: {color}" if color else ""
+        # Explicit dark text color is required alongside the light pastel
+        # background: Streamlit's dark theme defaults to white text, which
+        # is unreadable against these fills without an explicit override.
+        style = f"background-color: {color}; color: #1a1a1a" if color else ""
         return [style] * len(row)
 
     return df.style.apply(_row_style, axis=1)

@@ -37,12 +37,28 @@ def make_txn(
     amount,
     source_row: int,
     raw: dict | None = None,
+    is_ledger: bool = False,
 ) -> StandardTransaction:
+    """Build a StandardTransaction from a signed amount.
+
+    `is_ledger=False` (default, bank side): positive -> credit, negative ->
+    debit. `is_ledger=True` (ledger side): positive -> debit, negative ->
+    credit -- the ledger's asset convention is the opposite of the bank
+    side's passbook convention (see skills/reconciliation-matcher/SKILL.md).
+    Used so an intentionally-matching bank/ledger pair passed to
+    `reconcile()` can be built from the same signed `amount`.
+    """
     amount = Decimal(str(amount))
-    if amount >= 0:
-        credit, debit = amount, Decimal("0")
+    if is_ledger:
+        if amount >= 0:
+            debit, credit = amount, Decimal("0")
+        else:
+            debit, credit = Decimal("0"), -amount
     else:
-        credit, debit = Decimal("0"), -amount
+        if amount >= 0:
+            credit, debit = amount, Decimal("0")
+        else:
+            credit, debit = Decimal("0"), -amount
     return StandardTransaction(
         date=date,
         description=description,
@@ -63,9 +79,9 @@ def test_duplicate_amounts_per_pair_llm_scores_disambiguate_correctly():
     amount = "50000.00"
     # Ledger has human-readable narrations.
     ledger = [
-        make_txn(BASE_DATE, "Salary Payment - John Doe", amount, 1),
-        make_txn(BASE_DATE, "Office Rent - Head Office", amount, 2),
-        make_txn(BASE_DATE, "Utility Bill - K-Electric", amount, 3),
+        make_txn(BASE_DATE, "Salary Payment - John Doe", amount, 1, is_ledger=True),
+        make_txn(BASE_DATE, "Office Rent - Head Office", amount, 2, is_ledger=True),
+        make_txn(BASE_DATE, "Utility Bill - K-Electric", amount, 3, is_ledger=True),
     ]
     # Bank narrations are opaque NEFT reference codes -- textually they
     # don't resemble any ledger description, and (crucially) all three bank
@@ -124,9 +140,9 @@ def test_duplicate_amounts_flat_per_bank_llm_score_would_have_stayed_ambiguous()
     """
     amount = "50000.00"
     ledger = [
-        make_txn(BASE_DATE, "Salary Payment - John Doe", amount, 1),
-        make_txn(BASE_DATE, "Office Rent - Head Office", amount, 2),
-        make_txn(BASE_DATE, "Utility Bill - K-Electric", amount, 3),
+        make_txn(BASE_DATE, "Salary Payment - John Doe", amount, 1, is_ledger=True),
+        make_txn(BASE_DATE, "Office Rent - Head Office", amount, 2, is_ledger=True),
+        make_txn(BASE_DATE, "Utility Bill - K-Electric", amount, 3, is_ledger=True),
     ]
     # Flat override stashed on the bank txn itself (old M2 mechanism):
     # applies identically to every ledger candidate it's compared against.
@@ -216,8 +232,8 @@ def test_llm_scores_only_applies_to_the_exact_keyed_pair():
 
 def test_reconcile_with_llm_scores_none_matches_omitted_default():
     ledger = [
-        make_txn(BASE_DATE, "Vendor Payment Alpha", "5000.00", 1),
-        make_txn(BASE_DATE, "Vendor Payment Beta", "7000.00", 2),
+        make_txn(BASE_DATE, "Vendor Payment Alpha", "5000.00", 1, is_ledger=True),
+        make_txn(BASE_DATE, "Vendor Payment Beta", "7000.00", 2, is_ledger=True),
     ]
     bank = [
         make_txn(BASE_DATE, "Vendor Payment Alpha", "5000.00", 1),
@@ -247,8 +263,8 @@ def test_reconcile_llm_scores_none_reproduces_ambiguous_duplicates_case():
     amount = "3000.00"
     description = "Cheque Deposit"
     ledger = [
-        make_txn(BASE_DATE, description, amount, 1),
-        make_txn(BASE_DATE, description, amount, 2),
+        make_txn(BASE_DATE, description, amount, 1, is_ledger=True),
+        make_txn(BASE_DATE, description, amount, 2, is_ledger=True),
     ]
     bank = [
         make_txn(BASE_DATE, description, amount, 1),
