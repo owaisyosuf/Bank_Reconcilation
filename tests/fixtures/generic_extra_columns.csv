@@ -1,0 +1,4 @@
+Date,Branch,Account Type,Description,Debit,Credit,Balance
+01/01/2026,Karachi Main,Current,Opening Balance,,,"100,000.00"
+02/01/2026,Karachi Main,Current,Cash Deposit,,"50,000.00","150,000.00"
+03/01/2026,Lahore Branch,Savings,Cheque Withdrawal,"25,000.00",,"125,000.00"

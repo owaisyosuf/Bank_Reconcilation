@@ -49,6 +49,20 @@ def test_dates_are_not_masked():
     assert mask_pii("Paid on 15-07-2026 via cheque") == "Paid on 15-07-2026 via cheque"
 
 
+def test_iban_shaped_string_digit_portion_masked():
+    # IBANs are letters (country code + bank code) followed by a long digit
+    # run, e.g. Bank Alfalah's "PK39ALFH0240001002662746". The regex only
+    # matches contiguous digit characters, so it should mask the trailing
+    # digit run to its last 4 digits while leaving the leading letters
+    # untouched.
+    text = "IBAN PK39ALFH0240001002662746 for transfer"
+    result = mask_pii(text)
+    assert "0240001002662746" not in result
+    assert result.startswith("IBAN PK39ALFH")
+    assert result.endswith("2746 for transfer")
+    assert "*" in result
+
+
 def test_multiple_pii_runs_in_one_string_both_masked():
     text = "From 1234567890123456 to 9876543210987654"
     result = mask_pii(text)

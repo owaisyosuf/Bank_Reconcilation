@@ -53,6 +53,33 @@ class TestParseAmount:
         # in the conversion path.
         assert parse_amount("1234567.89") == Decimal("1234567.89")
 
+    def test_leading_minus_not_parentheses(self):
+        assert parse_amount("-5,000.00") == Decimal("-5000.00")
+
+    def test_plain_integer_no_decimal_point(self):
+        assert parse_amount("5000") == Decimal("5000")
+
+    def test_pkr_prefix(self):
+        assert parse_amount("PKR 1,234.50") == Decimal("1234.50")
+
+    def test_pkr_prefix_no_space(self):
+        assert parse_amount("PKR1,234.50") == Decimal("1234.50")
+
+    def test_rupee_symbol_prefix(self):
+        assert parse_amount("₨50") == Decimal("50")
+
+    def test_rupee_symbol_prefix_with_comma(self):
+        assert parse_amount("₨ 1,234.50") == Decimal("1234.50")
+
+    def test_leading_and_trailing_whitespace(self):
+        assert parse_amount("  1,234.50  ") == Decimal("1234.50")
+
+    def test_leading_and_trailing_whitespace_with_tabs_newlines(self):
+        assert parse_amount("\t5,000.00\n") == Decimal("5000.00")
+
+    def test_rs_prefix_with_negative(self):
+        assert parse_amount("Rs. -1,234.50") == Decimal("-1234.50")
+
 
 class TestParseDate:
     def test_ddmmyyyy_slash(self):
@@ -103,3 +130,18 @@ class TestParseDate:
     def test_none_raises(self):
         with pytest.raises(ValueError):
             parse_date(None)
+
+    def test_extra_whitespace_slash_format(self):
+        assert parse_date("  31/01/2026  ") == datetime.date(2026, 1, 31)
+
+    def test_extra_whitespace_dd_mmm_yyyy(self):
+        assert parse_date("\t31-Jan-2026\n") == datetime.date(2026, 1, 31)
+
+    def test_two_digit_year_slash(self):
+        # Some Pakistani bank exports still emit 2-digit years; Python's
+        # %y pivot maps 00-68 -> 2000-2068, which is the sane interpretation
+        # for a bank-statement context.
+        assert parse_date("31/01/26") == datetime.date(2026, 1, 31)
+
+    def test_two_digit_year_dd_mmm_yy(self):
+        assert parse_date("31-Jan-26") == datetime.date(2026, 1, 31)

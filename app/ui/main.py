@@ -14,6 +14,7 @@ from __future__ import annotations
 import csv
 import datetime
 import hashlib
+import inspect
 import io
 from decimal import Decimal, InvalidOperation
 
@@ -34,7 +35,7 @@ from app.llm.description_matcher import (
 from app.matching.engine import ReconciliationResult, reconcile
 from app.matching.scoring import MatchConfig, MatchRecord
 from app.parsers import BANK_ADAPTERS, get_parser
-from app.parsers.base import ScannedPdfError, StandardTransaction
+from app.parsers.base import PasswordProtectedPdfError, ScannedPdfError, StandardTransaction
 from app.parsers.ledger_parser import LedgerParser
 from app.ui.pii import mask_pii
 
@@ -43,6 +44,12 @@ SCANNED_PDF_MESSAGE = (
     "ke upload karein. (This PDF appears to be a scanned image with no "
     "extractable text — please download the statement as CSV or Excel from "
     "your bank's portal instead.)"
+)
+
+PASSWORD_PROTECTED_PDF_MESSAGE = (
+    "Ye PDF password se protect hai. Sidebar mein sahi password daal kar "
+    "dobara koshish karein. (This PDF is password-protected. Please enter "
+    "the correct password in the sidebar and try again.)"
 )
 
 TIER_COLORS = {
@@ -216,7 +223,11 @@ def _handle_ledger_upload(ledger_file) -> list[StandardTransaction] | None:
     try:
         rows = _read_raw_rows(file_bytes, ledger_file.name)
     except Exception as exc:
-        st.error(f"Could not read the ledger file: {exc}")
+        # mask_pii() as a defensive measure: some parser/library exceptions
+        # embed a raw cell value in their message (e.g. a bad-format error
+        # quoting the offending cell), which could theoretically contain an
+        # account number or CNIC (CLAUDE.md Hard Rule #5).
+        st.error(f"Could not read the ledger file: {mask_pii(str(exc))}")
         return None
 
     if not rows:
@@ -323,11 +334,36 @@ def _handle_ledger_upload(ledger_file) -> list[StandardTransaction] | None:
         )
         return LedgerParser().parse(synthetic_bytes, "ledger_synthetic.csv", col_mapping)
     except Exception as exc:
+        # See mask_pii() comment above — defensive against exception text
+        # that could embed a raw cell value.
         st.error(
-            f"Could not parse the ledger with the current column mapping: {exc}. "
-            "Try 'Change column mapping' above."
+            f"Could not parse the ledger with the current column mapping: "
+            f"{mask_pii(str(exc))}. Try 'Change column mapping' above."
         )
         return None
+
+
+def _parse_bank_statement(
+    parser, file_bytes: bytes, filename: str, password: str | None
+) -> list[StandardTransaction]:
+    """Call `parser.parse(...)`, only forwarding `password=` when the
+    adapter's `parse()` signature actually declares that parameter.
+
+    Not every adapter needs a password (only PDF adapters that may encounter
+    encryption, e.g. BankAlfalahParser, do). `BaseParser.parse()` declares
+    `password: str | None = None` in its abstract signature so new adapters
+    are free to accept it, but Python's ABCs don't enforce that overrides
+    match the base signature exactly — e.g. `GenericParser.parse()` only
+    takes `(self, file_bytes, filename)`. Passing `password=` to a parser
+    that doesn't accept it would raise `TypeError: parse() got an unexpected
+    keyword argument 'password'`, so we introspect the signature first
+    rather than guessing from `bank_name` (which would need updating every
+    time a new password-capable adapter is added).
+    """
+    accepts_password = "password" in inspect.signature(parser.parse).parameters
+    if accepts_password:
+        return parser.parse(file_bytes, filename, password=password)
+    return parser.parse(file_bytes, filename)
 
 
 # ---------------------------------------------------------------------------
@@ -427,7 +463,9 @@ def _render_export_section(result: ReconciliationResult) -> None:
         try:
             excel_bytes = build_excel_report(result)
         except Exception as exc:
-            st.error(f"Could not build the Excel report: {exc}")
+            # mask_pii() defensively, same reasoning as the parse-error
+            # handlers above.
+            st.error(f"Could not build the Excel report: {mask_pii(str(exc))}")
             return
         file_name = f"reconciliation_{datetime.date.today().isoformat()}.xlsx"
         st.download_button(
@@ -450,6 +488,16 @@ def _sidebar() -> tuple:
     bank_file = st.sidebar.file_uploader(
         "Bank statement (PDF, XLSX, or CSV)", type=["pdf", "xlsx", "xls", "csv"], key="bank_file"
     )
+    bank_password = ""
+    if bank_file is not None and bank_file.name.lower().endswith(".pdf"):
+        bank_password = st.sidebar.text_input(
+            "Bank statement PDF password (if protected)",
+            type="password",
+            key="bank_file_password",
+            help="Some Pakistani banks (e.g. Bank Alfalah) send PDF "
+            "e-statements protected with a password, often CNIC digits. "
+            "Leave blank if your PDF isn't password-protected.",
+        )
     ledger_file = st.sidebar.file_uploader(
         "Ledger (XLSX or CSV)", type=["xlsx", "xls", "csv"], key="ledger_file"
     )
@@ -500,7 +548,7 @@ def _sidebar() -> tuple:
         st.sidebar.error("Invalid tolerance value; using defaults.")
         config = MatchConfig()
 
-    return bank_name, bank_file, ledger_file, config, ai_enabled
+    return bank_name, bank_file, bank_password, ledger_file, config, ai_enabled
 
 
 # ---------------------------------------------------------------------------
@@ -513,22 +561,26 @@ def main() -> None:
     st.title("Bank Reconciliation")
     st.caption("Upload a bank statement and your ledger to generate a reconciliation report.")
 
-    bank_name, bank_file, ledger_file, config, ai_enabled = _sidebar()
+    bank_name, bank_file, bank_password, ledger_file, config, ai_enabled = _sidebar()
 
     bank_txns: list[StandardTransaction] | None = None
     if bank_file is not None:
         try:
             parser = get_parser(bank_name)
-            bank_txns = parser.parse(bank_file.getvalue(), bank_file.name)
+            bank_txns = _parse_bank_statement(
+                parser, bank_file.getvalue(), bank_file.name, bank_password or None
+            )
             if not bank_txns:
                 st.warning(
                     "No transactions could be extracted from the bank statement. "
                     "Double-check the file and bank selection."
                 )
+        except PasswordProtectedPdfError:
+            st.error(PASSWORD_PROTECTED_PDF_MESSAGE)
         except ScannedPdfError:
             st.error(SCANNED_PDF_MESSAGE)
         except Exception as exc:
-            st.error(f"Could not parse the bank statement: {exc}")
+            st.error(f"Could not parse the bank statement: {mask_pii(str(exc))}")
 
     ledger_txns: list[StandardTransaction] | None = None
     if ledger_file is not None:

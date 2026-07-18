@@ -300,5 +300,16 @@ class BankAlfalahParser(BaseParser):
                         current.description = (current.description + " " + addition).strip()
                         current.raw.setdefault("continuation_lines", []).append(addition)
 
+        if midpoints is None:
+            # The column-header line was never found on any page: this
+            # almost always means the wrong bank was selected for this
+            # file, not that the statement genuinely has zero transactions.
+            raise ValueError(
+                "Could not find Bank Alfalah's column-header line "
+                "(\"Date Description Cheq/Inst# Debit Credit Balance\") in "
+                "this PDF. Check that you selected the correct bank for "
+                "this statement."
+            )
+
         transactions.sort(key=lambda t: (t.date, t.source_row))
         return transactions

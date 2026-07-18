@@ -208,6 +208,70 @@ class TestPasswordProtection:
         assert txns[0].date == datetime.date(2026, 6, 1)
 
 
+class TestBlankCellNoPlaceholder:
+    """A transaction row where the Debit/Credit column is *entirely* blank
+    (no word at all in that column bucket, not even a literal "-"
+    placeholder) must still resolve to Decimal("0") without crashing."""
+
+    def setup_method(self):
+        self.parser = BankAlfalahParser()
+        self.filename = "bank_alfalah_blank_cell.pdf"
+        self.file_bytes = _load(self.filename)
+
+    def test_can_parse(self):
+        assert self.parser.can_parse(self.file_bytes, self.filename) is True
+
+    def test_row_count(self):
+        txns = self.parser.parse(self.file_bytes, self.filename)
+        assert len(txns) == 3
+
+    def test_entirely_blank_debit_resolves_to_zero(self):
+        txns = self.parser.parse(self.file_bytes, self.filename)
+        reversal = next(t for t in txns if t.description == "Bank Charges Reversed")
+        assert reversal.debit == Decimal("0")
+        assert reversal.credit == Decimal("50.00")
+
+    def test_entirely_blank_credit_resolves_to_zero(self):
+        txns = self.parser.parse(self.file_bytes, self.filename)
+        atm = next(t for t in txns if t.description == "ATM Withdrawal")
+        assert atm.credit == Decimal("0")
+        assert atm.debit == Decimal("20000.00")
+
+    def test_dash_placeholder_still_works_alongside_blank_cells(self):
+        txns = self.parser.parse(self.file_bytes, self.filename)
+        deposit = next(t for t in txns if t.description == "Cash Deposit")
+        assert deposit.debit == Decimal("0")
+        assert deposit.credit == Decimal("50000.00")
+
+
+class TestNoHeaderLineFoundOnAnyPage:
+    """A user can pick the wrong bank adapter for their file (get_parser()
+    lets them choose freely). If the Bank Alfalah adapter is force-fed a
+    PDF from a different bank whose column-header line never matches
+    HEADER_WORDS on any page, it must fail gracefully -- either an empty
+    result or a clear exception -- never an unhandled crash like
+    IndexError."""
+
+    def setup_method(self):
+        self.parser = BankAlfalahParser()
+        self.filename = "wrong_bank_no_header.pdf"
+        self.file_bytes = _load(self.filename)
+
+    def test_can_parse_is_false_for_wrong_bank(self):
+        # Best-effort bank identification correctly declines this file.
+        assert self.parser.can_parse(self.file_bytes, self.filename) is False
+
+    def test_forced_parse_raises_clear_error_not_a_crash(self):
+        # Even if a caller bypasses can_parse() and forces this adapter on
+        # the wrong file, parse() must not raise IndexError/AttributeError
+        # etc. Since no Alfalah-style header line was ever found to anchor
+        # column boundaries, it raises a clear, actionable ValueError rather
+        # than silently returning an empty list (which would look like "this
+        # statement has zero transactions" instead of "wrong bank selected").
+        with pytest.raises(ValueError, match="Bank Alfalah"):
+            self.parser.parse(self.file_bytes, self.filename)
+
+
 class TestCanParse:
     def test_can_parse_true_for_unencrypted_fixture(self):
         parser = BankAlfalahParser()
