@@ -15,10 +15,14 @@ from app.parsers.base import (
 )
 from app.parsers.bank_alfalah import BankAlfalahParser
 from app.parsers.bank_generic import GenericParser
+from app.parsers.bank_hmb import HabibMetropolitanParser
+from app.parsers.bank_meezan import MeezanBankParser
 
 BANK_ADAPTERS: dict[str, type[BaseParser]] = {
     "Other/Auto-detect": GenericParser,
     "Bank Alfalah": BankAlfalahParser,
+    "Meezan Bank": MeezanBankParser,
+    "Habib Metropolitan Bank": HabibMetropolitanParser,
 }
 
 
@@ -43,4 +47,6 @@ __all__ = [
     "get_parser",
     "GenericParser",
     "BankAlfalahParser",
+    "MeezanBankParser",
+    "HabibMetropolitanParser",
 ]
