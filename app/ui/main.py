@@ -620,10 +620,14 @@ def main() -> None:
                     )
             except LlmUnavailableError as exc:
                 st.warning(f"AI description matching skipped: {exc}")
-            except Exception as exc:
+            except Exception:
+                # Never surface the raw exception here: Gemini's own error
+                # bodies (e.g. an invalid-API-key response) can echo the
+                # submitted key back verbatim, and mask_pii() only redacts
+                # digit runs, not alphanumeric API keys.
                 st.warning(
-                    f"AI description matching failed ({exc}); falling back to "
-                    "plain description matching."
+                    "AI description matching failed (Gemini API error); "
+                    "falling back to plain description matching."
                 )
 
         result = reconcile(bank_txns, ledger_txns, config, llm_scores=llm_scores)
